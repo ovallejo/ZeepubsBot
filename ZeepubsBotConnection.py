@@ -19,19 +19,11 @@ class ZeepubsBotConnection:
                     author TEXT,
                     description TEXT,
                     book_path TEXT,
+                    cover_path TEXT,
                     file_id TEXT,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-            self.conn.commit()
-            self.cursor.execute('''
-                            CREATE TABLE IF NOT EXISTS bot_messages (
-                                id INTEGER PRIMARY KEY,
-                                title TEXT,
-                                message TEXT,
-                                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                            )
-                        ''')
             self.conn.commit()
         except sqlite3.Error as e:
             print(f'Error creating table: {e}')
@@ -50,10 +42,21 @@ class ZeepubsBotConnection:
                 raise ValueError("Invalid input data")
 
             self.cursor.execute('''
-                INSERT INTO books (book_id, title, alt_title, author, description, book_path, file_id)
-                VALUES (?, ?, ?, ?,?,?,?)
-            ''', (bdict_medata['id'], bdict_medata['title'], bdict_medata['alt_title'], bdict_medata['author'],
-                  bdict_medata['description'], bdict_medata['path'], bdict_medata['file_id']))
+                INSERT INTO books (book_id, title, alt_title, author, description, book_path, cover_path, file_id)
+                SELECT ?, ?, ?, ?, ?, ?, ?, ?
+                WHERE NOT EXISTS (SELECT 1 FROM books WHERE title = ?)
+                ''', (bdict_medata['id'], bdict_medata['title'], bdict_medata['alt_title'], bdict_medata['author'],
+                      bdict_medata['description'], bdict_medata['ebook_path'],bdict_medata['cover_path'],
+                      bdict_medata['file_id'], bdict_medata['title']))
+            self.conn.commit()
+
+            self.cursor.execute('''
+                    UPDATE books
+                    SET book_id = ?, alt_title = ?, author = ?, description = ?, book_path = ?, cover_path = ?, file_id = ?
+                    WHERE title = ?
+                    ''', (bdict_medata['id'], bdict_medata['alt_title'], bdict_medata['author'],
+                          bdict_medata['description'], bdict_medata['ebook_path'],bdict_medata['cover_path'],
+                          bdict_medata['file_id'], bdict_medata['title']))
             self.conn.commit()
         except sqlite3.Error as e:
             print(f'Error saving file id: {e}')
@@ -84,7 +87,7 @@ class ZeepubsBotConnection:
             if not book_name:
                 raise ValueError("Invalid input data")
             self.cursor.execute('''
-                SELECT * FROM books WHERE title LIKE ?
+                SELECT * FROM books WHERE title LIKE ? ORDER BY title
             ''', ('%' + book_name + '%',))
             result = self.cursor.fetchall()
             if result:
@@ -101,7 +104,7 @@ class ZeepubsBotConnection:
     def get_all_books(self) -> list[Any] | None:
         try:
             self.cursor.execute('''
-                SELECT * FROM books
+                SELECT * FROM books ORDER BY title
             ''')
             result = self.cursor.fetchall()
             if result:
@@ -146,6 +149,25 @@ class ZeepubsBotConnection:
                 return None
         except sqlite3.Error as e:
             print(f'Error getting file id: {e}')
+            raise e
+        except ValueError as e:
+            print(f'Error: {e}')
+            raise e
+
+    def get_message_by_title(self, title: str) -> str | None:
+        try:
+            if not title:
+                raise ValueError("Invalid input data")
+            self.cursor.execute('''
+                SELECT message FROM bot_messages WHERE title = ?
+            ''', (title,))
+            result = self.cursor.fetchone()
+            if result:
+                return result[0]
+            else:
+                return "None"
+        except sqlite3.Error as e:
+            print(f'Error getting bot message: {e}')
             raise e
         except ValueError as e:
             print(f'Error: {e}')
