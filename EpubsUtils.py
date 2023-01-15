@@ -104,7 +104,7 @@ class EpubsUtils:
         if dict_medata:
             dict_medata['file_id'] = file_id
             dict_medata['author'] = cls.clean_string(dict_medata['author'])
-            author = cls.path_format_string(dict_medata['author'])
+            author = cls.path_format_string(dict_medata['author']).lower()
             dict_medata['title'] = cls.clean_string(dict_medata['title']).lower()
             title = cls.path_format_string(dict_medata['title'])
 
@@ -115,6 +115,8 @@ class EpubsUtils:
                 os.rename(file_downloaded.absolute(), os.path.relpath(ebook_path))
                 cover_path = cls.get_cover(ebook_path)
                 dict_medata['cover_path'] = cover_path
+            else:
+                return {}
         return dict_medata
 
     @classmethod

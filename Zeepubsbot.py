@@ -1,11 +1,13 @@
+import html
 import json
 import logging
 import math
 import os
+import traceback
 from typing import Tuple
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.constants import ChatAction
+from telegram.constants import ChatAction, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes, Application, CommandHandler, CallbackContext, MessageHandler, filters, \
     CallbackQueryHandler
@@ -23,15 +25,17 @@ class Zeepubsbot:
     application = None
     mensajes_bot = None
     matches = None
-    loger = logging.Logger
+    DEVELOPER_CHAT_ID = 706229521
+
+    logging.basicConfig(
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    )
+    logger = logging.getLogger(__name__)
 
     @classmethod
     def main(cls) -> None:
         # Enable logging
-        logging.basicConfig(
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-        )
-        cls.logger = logging.getLogger(__name__)
+
         cls.application = Application.builder().token(os.getenv("ZEEPUBSBOT_TOKEN")).build()
         with open("mensajes.json", encoding="UTF-8") as file_bot_messages:
             cls.mensajes_bot = json.load(file_bot_messages)
@@ -43,8 +47,37 @@ class Zeepubsbot:
         cls.application.add_handler(MessageHandler(filters.Document.ALL, cls.upload_command))
         cls.application.add_handler(CallbackQueryHandler(cls.characters_page_callback, pattern="^character"))
         cls.application.add_handler(CallbackQueryHandler(cls.download_callback, pattern=r"download "))
+        cls.application.add_error_handler(cls.error_handler)
         cls.creat_commands([])
         cls.application.run_polling()
+
+    @classmethod
+    async def error_handler(cls, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Log the error and send a telegram message to notify the developer."""
+        # Log the error before we do anything else, so we can see it even if something breaks.
+        cls.logger.error(msg="Exception while handling an update:", exc_info=context.error)
+
+        # traceback.format_exception returns the usual python message about an exception, but as a
+        # list of strings rather than a single string, so we have to join them together.
+        tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
+        tb_string = "".join(tb_list)
+
+        # Build the message with some markup and additional information about what happened.
+        # You might need to add some logic to deal with messages longer than the 4096-character limit.
+        update_str = update.to_dict() if isinstance(update, Update) else str(update)
+        message = (
+            f"An exception was raised while handling an update\n"
+            f"<pre>update = {html.escape(json.dumps(update_str, indent=2, ensure_ascii=False))}"
+            "</pre>\n\n"
+            f"<pre>context.chat_data = {html.escape(str(context.chat_data))}</pre>\n\n"
+            f"<pre>context.user_data = {html.escape(str(context.user_data))}</pre>\n\n"
+            f"<pre>{html.escape(tb_string)}</pre>"
+        )
+
+        # Finally, send the message
+        await context.bot.send_message(
+            chat_id=cls.DEVELOPER_CHAT_ID, text=message, parse_mode=ParseMode.HTML
+        )
 
     @classmethod
     def creat_commands(cls, command_list):
@@ -62,17 +95,17 @@ class Zeepubsbot:
 
         """Send a message when the command /help is issued."""
         commands = [
-            '/start - Este comando permite saludar al bot y recibir un mensaje de bienvenida personalizado. Es útil para iniciar una conversación con el bot y conocer las opciones disponibles.',
-            '/help - Este comando proporciona información sobre cómo utilizar el bot, incluyendo una descripción de las funciones disponibles y cómo acceder a ellas. Es útil para obtener ayuda rápida si tienes alguna pregunta o problema',
-            '/ebook - Este comando te permite buscar libros por título. Una vez que ingreses el título, el bot te proporcionará una lista de opciones de libros disponibles. Esta función es útil para encontrar libros específicos rápidamente',
-            '/list - Este comando te proporciona una lista de todos los libros disponibles. Esta función es útil para explorar todas las opciones de libros disponibles y encontrar algo que te interese leer',
-            '/about - Este comando proporciona detalles sobre el bot, incluyendo su propósito, características y cualquier otra información relevante. Es útil para conocer mejor el bot y entender cómo se relaciona con tus necesidades.'
+            '/start - Este comando permite saludar al bot y recibir un mensaje de bienvenida personalizado. ',
+            '/help - Este comando proporciona información sobre cómo utilizar el bot, incluyendo una descripción de las funciones disponibles y cómo acceder a ellas.',
+            '/ebook - Este comando te permite buscar libros por título. Una vez que ingreses el título, el bot te proporcionará una lista de opciones de libros disponibles.',
+            '/list - Este comando te proporciona una lista de todos los libros disponibles.',
+            '/about - Este comando proporciona detalles sobre el bot, incluyendo su propósito, características y cualquier otra información relevante.'
 
         ]
         message = cls.mensajes_bot['ayuda']
         message += 'Menu de comandos:\n' + '\n'.join(commands)
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-        await update.message.reply_text(message, parse_mode="HTML")
+        await update.message.reply_text(message, parse_mode=ParseMode.HTML)
 
     @classmethod
     async def start_command(cls, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -81,7 +114,7 @@ class Zeepubsbot:
         """Send a message when the command /start is issued."""
         message = cls.mensajes_bot['bienvenida']
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-        await update.message.reply_text(message, parse_mode="HTML")
+        await update.message.reply_text(message, parse_mode=ParseMode.HTML)
 
     @classmethod
     async def about_command(cls, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -90,14 +123,14 @@ class Zeepubsbot:
         """Send a message when the command /start is issued."""
         message = cls.mensajes_bot['info']
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-        await update.message.reply_text(message, parse_mode="HTML")
+        await update.message.reply_text(message, parse_mode=ParseMode.HTML)
 
     @classmethod
     async def book_command(cls, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logging.info("Book Command userName: {}".format(update.effective_user))
         book_name = " ".join(context.args).lower()
         if not book_name:
-            await update.message.reply_text("Ingresa el nombre del libro.")
+            await update.message.reply_text("Por favor ingrese el nombre del libro después del comando /ebook")
         else:
             cls.matches = cls.bot_conn.get_book_by_name(book_name=book_name)
             if not cls.matches:
@@ -193,16 +226,19 @@ class Zeepubsbot:
             raise e
         if new_file_downloaded.suffix == ".epub":
             dict_medata = cls.epubutils.create_book_structure(new_file_downloaded, new_file.file_id)
-            cls.bot_conn.save_book(dict_medata)
-            id_list = [dict_medata['id']]
-            cls.creat_commands(id_list)
-            book_name = dict_medata['title']
-            # book_author = dict_medata['author']
-            book_link = "/{}".format(dict_medata['id'])
-            message = "***¡Nuevo libro disponible!*** \n\n***Título:***\t{}\n\n***Descargalo aquí:***\t{}" \
-                      "\n\n¡Disfrútenlo!".format(book_name, book_link)
-            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-            await update.message.reply_text(text=message, parse_mode="Markdown")
+            if dict_medata:
+                cls.bot_conn.save_book(dict_medata)
+                id_list = [dict_medata['id']]
+                cls.creat_commands(id_list)
+                book_name = dict_medata['title']
+                # book_author = dict_medata['author']
+                book_link = "/{}".format(dict_medata['id'])
+                message = "***¡Nuevo libro disponible!*** \n\n***Título:***\t{}\n\n***Descargalo aquí:***\t{}" \
+                          "\n\n¡Disfrútenlo!".format(book_name, book_link)
+                await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+                await update.message.reply_text(text=message, parse_mode=ParseMode.MARKDOWN)
+            else:
+                await update.message.reply_text(text="El libro ya existe en la base de datos", parse_mode=ParseMode.MARKDOWN)
 
         else:
             if os.path.exists(new_file_downloaded.absolute()):
@@ -210,7 +246,6 @@ class Zeepubsbot:
                 await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
                 await update.message.reply_text("El archivo no esta en formato EPUB")
 
-    # def create_book_structure(self):
 
     @classmethod
     async def book_callback(cls, update: Update, context: CallbackContext) -> None:
@@ -240,10 +275,10 @@ class Zeepubsbot:
             await update.message.reply_photo(
                 photo=cover_path,
                 caption=message,
-                parse_mode="Markdown",
+                parse_mode=ParseMode.MARKDOWN,
                 reply_markup=keyboard)
         else:
-            await update.message.reply_text(text=message, parse_mode="HTML", reply_markup=keyboard)
+            await update.message.reply_text(text=message, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
     @classmethod
     async def download_callback(cls, update: Update, context: CallbackContext) -> None:
