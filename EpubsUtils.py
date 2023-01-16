@@ -1,11 +1,10 @@
-import json
 import os
 import re
 import secrets
 from pathlib import Path
 from typing import List, Dict, Any
+from googletrans import Translator
 
-from telegram import File
 from tqdm import tqdm
 import ebooklib
 import isbnlib
@@ -60,34 +59,29 @@ class EpubsUtils:
 
         title_metadata = book.get_metadata("DC", "title")
         if title_metadata:
-            title_metadata = title_metadata[0][0]
-        else:
-            title_metadata = ""
+            title_metadata = cls.clean_string(title_metadata[0][0])
+            title_metadata = title_metadata.replace("Volumen", "Vol. ").strip()
 
         description_metadata = book.get_metadata("DC", "description")
         if description_metadata:
-            description_metadata = description_metadata[0][0]
-        else:
-            description_metadata = ""
+            description_metadata = cls.clean_string(description_metadata[0][0])
 
         language_metadata = book.get_metadata("DC", "language")
         if language_metadata:
             language_metadata = language_metadata[0][0]
         else:
             language_metadata = ""
-        alt_title = ""
-        for item in book.get_metadata('DC', 'identifier'):
-            item_str = str(item[0])
-            if item_str.__contains__('isbn'):
-                isbn = item_str.replace("isbn:", "").replace("urn:", "").replace("-", "")
+
+        meta_cloud = ""
+        cache = {}
+        list_isbn = isbnlib.editions(cls.find_isbn(book.get_metadata('DC', 'identifier')), service='merge')
+        for isbn in list_isbn:
+            if isbn not in cache:
                 if isbnlib.is_isbn13(isbn):
                     meta_cloud = isbnlib.meta(isbn)
-                    alt_title = meta_cloud.get('Title', "")
-        title_metadata = re.sub(r"\[.*?\]", "", title_metadata).strip()
-        title_metadata = re.sub(r"\(.*?\)", "", title_metadata).strip()
-        title_metadata = title_metadata.replace("Volumen", "Vol. ").strip()
-        description_metadata = re.sub(r"\<.*?\>", "", description_metadata)
-
+                    if meta_cloud:
+                        cache[isbn] = meta_cloud
+        alt_title = meta_cloud.get('Title', "")
         # Create a dictionary to store the metadata
         metadata_dict = {"id": code, "title": title_metadata, "alt_title": alt_title,
                          "language": language_metadata, "type": type_value, "author": creators,
@@ -96,6 +90,19 @@ class EpubsUtils:
         # Iterate over the metadata items
 
         return metadata_dict
+
+    @classmethod
+    def find_isbn(cls, metadata):
+        for item in metadata:
+            if "isbn" in str(item[0]).lower():
+                return cls.clean_isbn(str(item[0]))
+            elif len(item) > 1 and "isbn" in str(item[1]).lower():
+                return cls.clean_isbn(item[0])
+        return None
+
+    @classmethod
+    def clean_isbn(cls, isbn: str):
+        return re.sub(r'[^0-9]', '', isbn)
 
     @classmethod
     def create_book_structure(cls, file_downloaded: Path, file_id: str) -> dict:
@@ -148,12 +155,12 @@ class EpubsUtils:
     @classmethod
     def main(cls) -> None:
         metadata_aux = []
-        epub_lis = cls.get_epub_files("D:\ebooks")
+        epub_lis = cls.get_epub_files("/Users/neoris/Documents/ZeepubsBot/books")
         for i, epub_file in enumerate(tqdm(epub_lis, desc="Procesando Libros", ascii="|/-\\", ncols=100,
                                            bar_format='{l_bar}{bar} {n}/{total}')):
             metadata_aux.append(cls.get_metadata(epub_file))
             cls.get_cover(epub_file)
-
+            print(metadata_aux)
         # with open("ebooks/metadata.json", "w", encoding='UTF-8') as f:
         #     json.dump(metadata_aux, f)
 
