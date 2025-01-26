@@ -1,15 +1,13 @@
-import json
 import os
 import re
 import secrets
 from pathlib import Path
 from typing import List, Dict, Any
 
-from telegram import File
-from tqdm import tqdm
 import ebooklib
 import isbnlib
 from ebooklib import epub
+from tqdm import tqdm
 
 from ZeepubsBotConnection import ZeepubsBotConnection
 
@@ -22,24 +20,20 @@ class EpubsUtils:
         super().__init__()
 
     @classmethod
-    def get_cover(cls, epubfile: str) -> str:
+    def get_cover(cls, epubfile: str) -> bytes:
         book = epub.read_epub(epubfile)
-        root = os.path.dirname(epubfile)
-        # Buscar la portada del libro (si existe)
+        # Buscar la portada
         cover = None
         for item in book.get_items():
             if item.get_type() == ebooklib.ITEM_COVER:
                 cover = item.get_content()
                 if cover:
-                    with open(os.path.join(root, 'cover.jpg'), 'wb') as f:
-                        f.write(cover)
-        if not cover:
-            for item in book.get_items():
-                if item.get_type() == ebooklib.ITEM_IMAGE and str(item.file_name).__contains__('cover'):
-                    cover = item.get_content()
-                    with open(os.path.join(root, 'cover.jpg'), 'wb') as f:
-                        f.write(cover)
-        return os.path.join(root, 'cover.jpg').replace("\\", "/")
+                    return cover
+        # Si no se encuentra ITEM_COVER, buscar imagen con 'cover' en el nombre
+        for item in book.get_items():
+            if item.get_type() == ebooklib.ITEM_IMAGE and "cover" in item.file_name.lower():
+                return item.get_content()
+        return None  # Si no hay portada
 
     @classmethod
     def get_metadata(cls, epubfile: str) -> Dict[str, Any]:
@@ -91,33 +85,24 @@ class EpubsUtils:
         # Create a dictionary to store the metadata
         metadata_dict = {"id": code, "title": title_metadata, "alt_title": alt_title,
                          "language": language_metadata, "type": type_value, "author": creators,
-                         "description": description_metadata, "path": os.path.relpath(epubfile)}
+                         "description": description_metadata}
 
         # Iterate over the metadata items
 
         return metadata_dict
 
     @classmethod
-    def create_book_structure(cls, file_downloaded: Path, file_id: str) -> dict:
+    def processing_ebook(cls, file_downloaded: Path, file_id: str) -> dict:
         file_path = os.path.relpath(file_downloaded)
         dict_medata = cls.get_metadata(file_path)
+        cover_data = cls.get_cover(file_path)  # Ahora obtiene bytes
+
         if dict_medata:
             dict_medata['file_id'] = file_id
             dict_medata['author'] = cls.clean_string(dict_medata['author'])
-            author = cls.path_format_string(dict_medata['author']).lower()
             dict_medata['title'] = cls.clean_string(dict_medata['title']).lower()
-            title = cls.path_format_string(dict_medata['title'])
-
-            ebook_path = "ebooks/{}/{}/{}.epub".format(author, title, title)
-            dict_medata['ebook_path'] = ebook_path
-            if not os.path.exists(ebook_path):
-                os.makedirs(os.path.dirname(ebook_path), exist_ok=True)
-                os.rename(file_downloaded.absolute(), os.path.relpath(ebook_path))
-                cover_path = cls.get_cover(ebook_path)
-                dict_medata['cover_path'] = cover_path
-            else:
-                return {}
-        return dict_medata
+            dict_medata['cover_data'] = cover_data  # Añadir datos binarios
+        return dict_medata if dict_medata else {}
 
     @classmethod
     def clean_string(cls, raw_text: str):
@@ -145,17 +130,6 @@ class EpubsUtils:
         else:
             return raw_text
 
-    @classmethod
-    def main(cls) -> None:
-        metadata_aux = []
-        epub_lis = cls.get_epub_files("D:\ebooks")
-        for i, epub_file in enumerate(tqdm(epub_lis, desc="Procesando Libros", ascii="|/-\\", ncols=100,
-                                           bar_format='{l_bar}{bar} {n}/{total}')):
-            metadata_aux.append(cls.get_metadata(epub_file))
-            cls.get_cover(epub_file)
-
-        # with open("ebooks/metadata.json", "w", encoding='UTF-8') as f:
-        #     json.dump(metadata_aux, f)
 
     @classmethod
     def create_book_id(cls) -> str:

@@ -1,5 +1,5 @@
 import sqlite3
-from typing import List, Any
+from typing import Any
 
 
 class ZeepubsBotConnection:
@@ -18,9 +18,8 @@ class ZeepubsBotConnection:
                     alt_title TEXT,
                     author TEXT,
                     description TEXT,
-                    book_path TEXT,
-                    cover_path TEXT,
                     file_id TEXT,
+                    cover_id TEXT,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -42,21 +41,21 @@ class ZeepubsBotConnection:
                 raise ValueError("Invalid input data")
 
             self.cursor.execute('''
-                INSERT INTO books (book_id, title, alt_title, author, description, book_path, cover_path, file_id)
-                SELECT ?, ?, ?, ?, ?, ?, ?, ?
+                INSERT INTO books (book_id, title, alt_title, author, description, file_id, cover_id)
+                SELECT ?, ?, ?, ?, ?, ?, ?
                 WHERE NOT EXISTS (SELECT 1 FROM books WHERE title = ?)
                 ''', (bdict_medata['id'], bdict_medata['title'], bdict_medata['alt_title'], bdict_medata['author'],
-                      bdict_medata['description'], bdict_medata['ebook_path'],bdict_medata['cover_path'],
-                      bdict_medata['file_id'], bdict_medata['title']))
+                      bdict_medata['description'], bdict_medata['file_id'], bdict_medata['cover_id'],
+                      bdict_medata['title']))
             self.conn.commit()
 
             self.cursor.execute('''
                     UPDATE books
-                    SET book_id = ?, alt_title = ?, author = ?, description = ?, book_path = ?, cover_path = ?, file_id = ?
+                    SET book_id = ?, alt_title = ?, author = ?, description = ?, file_id = ?, cover_id = ?
                     WHERE title = ?
                     ''', (bdict_medata['id'], bdict_medata['alt_title'], bdict_medata['author'],
-                          bdict_medata['description'], bdict_medata['ebook_path'],bdict_medata['cover_path'],
-                          bdict_medata['file_id'], bdict_medata['title']))
+                          bdict_medata['description'], bdict_medata['file_id'], bdict_medata['cover_id'],
+                          bdict_medata['title']))
             self.conn.commit()
         except sqlite3.Error as e:
             print(f'Error saving file id: {e}')
@@ -168,6 +167,23 @@ class ZeepubsBotConnection:
                 return "None"
         except sqlite3.Error as e:
             print(f'Error getting bot message: {e}')
+            raise e
+        except ValueError as e:
+            print(f'Error: {e}')
+            raise e
+
+    def get_all_books_no_desc(self) -> list[Any] | None:
+        try:
+            self.cursor.execute('''
+                SELECT book_id, title FROM books ORDER BY title
+            ''')
+            result = self.cursor.fetchall()
+            if result:
+                return result
+            else:
+                return None
+        except sqlite3.Error as e:
+            print(f'Error getting file id: {e}')
             raise e
         except ValueError as e:
             print(f'Error: {e}')

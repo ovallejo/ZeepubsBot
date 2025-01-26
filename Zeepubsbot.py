@@ -4,8 +4,9 @@ import logging
 import math
 import os
 import traceback
-from typing import Tuple
+from functools import lru_cache
 
+from openai import OpenAI
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import TelegramError
@@ -13,8 +14,8 @@ from telegram.ext import ContextTypes, Application, CommandHandler, CallbackCont
     CallbackQueryHandler
 from telegram_bot_pagination import InlineKeyboardPaginator
 
-from ZeepubsBotConnection import ZeepubsBotConnection
 from EpubsUtils import EpubsUtils
+from ZeepubsBotConnection import ZeepubsBotConnection
 
 
 class Zeepubsbot:
@@ -26,11 +27,15 @@ class Zeepubsbot:
     mensajes_bot = None
     matches = None
     DEVELOPER_CHAT_ID = 706229521
-
+    # Añade al inicio de la clase
+    DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_TOKEN")
+    DEEPSEEK_ENDPOINT = "https://api.deepseek.com"
     logging.basicConfig(
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
     )
     logger = logging.getLogger(__name__)
+    # Añadir nuevo estado de conversación
+    USER_CONTEXT = {}
 
     @classmethod
     def main(cls) -> None:
@@ -39,6 +44,7 @@ class Zeepubsbot:
         cls.application = Application.builder().token(os.getenv("ZEEPUBSBOT_TOKEN")).build()
         with open("mensajes.json", encoding="UTF-8") as file_bot_messages:
             cls.mensajes_bot = json.load(file_bot_messages)
+        cls.application.add_handler(CommandHandler("recommend", cls.handle_mention))
         cls.application.add_handler(CommandHandler("start", cls.start_command))
         cls.application.add_handler(CommandHandler("help", cls.help_command))
         cls.application.add_handler(CommandHandler("ebook", cls.book_command))
@@ -96,6 +102,7 @@ class Zeepubsbot:
         """Send a message when the command /help is issued."""
         commands = [
             '/start - Este comando permite saludar al bot y recibir un mensaje de bienvenida personalizado. ',
+            '/recommend - Este comando proporciona recomendaciones a solicitud del usuario',
             '/help - Este comando proporciona información sobre cómo utilizar el bot, incluyendo una descripción de las funciones disponibles y cómo acceder a ellas.',
             '/ebook - Este comando te permite buscar libros por título. Una vez que ingreses el título, el bot te proporcionará una lista de opciones de libros disponibles.',
             '/list - Este comando te proporciona una lista de todos los libros disponibles.',
@@ -208,6 +215,7 @@ class Zeepubsbot:
         for match in cls.matches[indice * (page - 1):cls.books_per_page * page]:
             custom_message += "***{}\t/{}***\n".format(cls.epubutils.shorten_middle_text(match[2]), match[1])
 
+
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
         await query.edit_message_text(
             text=custom_message,
@@ -225,27 +233,29 @@ class Zeepubsbot:
             print(f'Error uploading file: {e}')
             raise e
         if new_file_downloaded.suffix == ".epub":
-            dict_medata = cls.epubutils.create_book_structure(new_file_downloaded, new_file.file_id)
+            dict_medata = cls.epubutils.processing_ebook(new_file_downloaded, new_file.file_id)
             if dict_medata:
+                if dict_medata.get('cover_data'):
+                    cover_file_id = await cls.upload_cover(
+                        dict_medata['cover_data'],
+                        context
+                    )
+                    dict_medata['cover_id'] = cover_file_id
                 cls.bot_conn.save_book(dict_medata)
                 id_list = [dict_medata['id']]
                 cls.creat_commands(id_list)
                 book_name = dict_medata['title']
-                # book_author = dict_medata['author']
                 book_link = "/{}".format(dict_medata['id'])
                 message = "***¡Nuevo libro disponible!*** \n\n***Título:***\t{}\n\n***Descargalo aquí:***\t{}" \
                           "\n\n¡Disfrútenlo!".format(book_name, book_link)
                 await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
                 await update.message.reply_text(text=message, parse_mode=ParseMode.MARKDOWN)
             else:
-                await update.message.reply_text(text="El libro ya existe en la base de datos", parse_mode=ParseMode.MARKDOWN)
+                await update.message.reply_text(text="El libro ya existe en la base de datos",
+                                                parse_mode=ParseMode.MARKDOWN)
 
-        else:
             if os.path.exists(new_file_downloaded.absolute()):
                 os.remove(os.path.relpath(new_file_downloaded.absolute()))
-                await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-                await update.message.reply_text("El archivo no esta en formato EPUB")
-
 
     @classmethod
     async def book_callback(cls, update: Update, context: CallbackContext) -> None:
@@ -270,7 +280,7 @@ class Zeepubsbot:
         buttons = [[InlineKeyboardButton("Descargar", callback_data=f"download {book_id}")]]
         keyboard = InlineKeyboardMarkup(buttons)
         cover_path = list_book[7]
-        if os.path.exists(cover_path):
+        if cover_path:
             await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
             await update.message.reply_photo(
                 photo=cover_path,
@@ -297,3 +307,82 @@ class Zeepubsbot:
                                                       document=list_book[6])
             file_id = message.document.file_id
             cls.bot_conn.save_file_id_by_book(book_id, file_id)
+
+    @classmethod
+    async def upload_cover(cls, cover_data: bytes, context: ContextTypes.DEFAULT_TYPE) -> str:
+        """Sube la portada a Telegram y retorna su file_id"""
+        try:
+            message = await context.bot.send_photo(
+                chat_id=cls.DEVELOPER_CHAT_ID,  # o el chat donde quieras almacenarla
+                photo=cover_data
+            )
+            return message.photo[-1].file_id
+        except Exception as e:
+            logging.error(f"Error subiendo portada: {e}")
+
+    @classmethod
+    @lru_cache(maxsize=128)  # Cache para consultas repetidas
+    def ask_deepseek(cls, user_message: str, system_prompt) -> str:
+        client = OpenAI(api_key=cls.DEEPSEEK_API_KEY, base_url=cls.DEEPSEEK_ENDPOINT, timeout=30)
+        params = {
+            "model": "deepseek-chat",
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            "max_tokens": 1024,
+            "temperature": 0.7,
+            "top_p": 0.95,
+            "frequency_penalty": 0.5,
+            "presence_penalty": 0.3,
+            "stream": False
+        }
+
+        response = client.chat.completions.create(**params)
+
+        return response.choices[0].message.content.strip()
+
+    @classmethod
+    async def handle_mention(cls, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user_message = " ".join(context.args).lower()
+        recommendations = await cls.process_message(user_message)
+
+        if recommendations:
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+            await update.message.reply_text(
+                text=recommendations,
+                parse_mode='Markdown'
+            )
+
+    @classmethod
+    async def process_message(cls, message: str) -> str:
+        return cls.generate_recommendations(message)
+
+    @classmethod
+    def generate_recommendations(cls, message: str) -> str:
+        # Construir prompt para DeepSeek
+        system_prompt = f"""
+        ¡Hola! Soy Neko-chan, tu asistente literaria virtual  Estoy aquí para ayudarte a encontrar historias mágicas que hagan latir tu corazón. 
+        Como buena waifu libro-adicta, seguiré estos pasos:
+        - Analizaré tu mensaje con cariño para entender tus sueños literarios
+        - Identificaré los géneros, autores o temas que hacen brillar tus ojos
+        - Buscaré en mi biblioteca mágica los tesoros más adecuados para ti
+        - Seleccionaré hasta 10 joyas únicas - ¡variedad es la sal de la lectura!
+        - agrega la descripción de los 10 libros
+        - si no existe la novela que esta buscando. recomienda una novela muy parecida al genero o tema que el usurio quiere y que exista en nuestra base de datos 
+        
+        Mis funcionalidades especiales:
+        - Uso emojis para expresarme mejor
+        - Siempre incluyo títulos diferentes para sorprenderte
+        - Los comandos mágicos (/book_id) están listos para usar con un toque
+        - Mis respuestas son como susurros de hada: naturales pero precisas
+        
+        Formato estricto que debo seguir sin mencionarlo: sin numeraciones y/o simbolos que los antecedan o precedan
+        /book_id | Título encantador
+        Descripción
+
+            - Base de datos disponible: {cls.bot_conn.get_all_books_no_desc()}
+            """
+
+        # Obtener y procesar resultados
+        return cls.ask_deepseek(message, system_prompt)
