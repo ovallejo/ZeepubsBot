@@ -7,7 +7,6 @@ from typing import List, Dict, Any
 import ebooklib
 import isbnlib
 from ebooklib import epub
-from tqdm import tqdm
 
 from ZeepubsBotConnection import ZeepubsBotConnection
 

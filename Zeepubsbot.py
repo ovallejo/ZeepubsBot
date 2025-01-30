@@ -1,17 +1,17 @@
+import asyncio
 import html
 import json
 import logging
 import math
 import os
 import traceback
-from functools import lru_cache
 
-from openai import OpenAI
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes, Application, CommandHandler, CallbackContext, MessageHandler, filters, \
     CallbackQueryHandler
+from openai import OpenAI
 from telegram_bot_pagination import InlineKeyboardPaginator
 
 from EpubsUtils import EpubsUtils
@@ -36,7 +36,11 @@ class Zeepubsbot:
     logger = logging.getLogger(__name__)
     # Añadir nuevo estado de conversación
     USER_CONTEXT = {}
-
+    client = OpenAI(
+        api_key=DEEPSEEK_API_KEY,
+        base_url=DEEPSEEK_ENDPOINT,
+        timeout=30
+    )
     @classmethod
     def main(cls) -> None:
         # Enable logging
@@ -321,45 +325,81 @@ class Zeepubsbot:
             logging.error(f"Error subiendo portada: {e}")
 
     @classmethod
-    @lru_cache(maxsize=128)  # Cache para consultas repetidas
-    def ask_deepseek(cls, user_message: str, system_prompt) -> str:
-        client = OpenAI(api_key=cls.DEEPSEEK_API_KEY, base_url=cls.DEEPSEEK_ENDPOINT, timeout=30)
-        params = {
-            "model": "deepseek-chat",
-            "messages": [
+    async def ask_deepseek(cls, user_message: str, system_prompt: str, update: Update,
+                           context: ContextTypes.DEFAULT_TYPE) -> None:
+
+
+        # Enviar mensaje inicial
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action=ChatAction.TYPING
+        )
+
+        # Envía un mensaje temporal de "Escribiendo..."
+        processing_msg = await context.bot.send_message(
+            chat_id=update.message.chat_id,
+            text="🔮 *Neko-Chan está buscando...*",
+            parse_mode="Markdown"
+        )
+
+
+
+        response = cls.client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
             ],
-            "max_tokens": 1024,
-            "temperature": 0.7,
-            "top_p": 0.95,
-            "frequency_penalty": 0.5,
-            "presence_penalty": 0.3,
-            "stream": False
-        }
+            max_tokens=1024,
+            temperature=0.7,
+            top_p=0.95,
+            frequency_penalty=0.5,
+            presence_penalty=0.3,
+            stream=True  # Habilitar streaming
+        )
 
-        response = client.chat.completions.create(**params)
+        full_response = []
+        buffer = ""
 
-        return response.choices[0].message.content.strip()
+        for chunk in response:
+            if chunk.choices[0].delta.content:
+                buffer += chunk.choices[0].delta.content
+
+                # Enviar mensaje cuando encontramos un salto de línea o cada 50 caracteres
+                if len(buffer)%50 == 0:
+                    await context.bot.send_chat_action(
+                        chat_id=update.effective_chat.id,
+                        action=ChatAction.TYPING
+                    )
+
+                    buffer.strip()
+                    await asyncio.sleep(2)
+                    await processing_msg.edit_text("".join(buffer.strip()) + " ▌", parse_mode="Markdown")
+
+        # Enviar cualquier texto restante en el buffer
+        if buffer.strip():
+            await processing_msg.edit_text(buffer.strip(), parse_mode="Markdown")
+        else:
+            await processing_msg.edit_text("🔮 *Neko-Chan No Disponible*", parse_mode="Markdown")
+
 
     @classmethod
     async def handle_mention(cls, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user_message = " ".join(context.args).lower()
-        recommendations = await cls.process_message(user_message)
+        system_prompt = cls.generate_recommendations()
 
-        if recommendations:
-            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-            await update.message.reply_text(
-                text=recommendations,
-                parse_mode='Markdown'
-            )
+
+        # Procesar con streaming
+        await cls.ask_deepseek(
+            user_message=user_message,
+            system_prompt=system_prompt,
+            update=update,
+            context=context
+        )
+
 
     @classmethod
-    async def process_message(cls, message: str) -> str:
-        return cls.generate_recommendations(message)
-
-    @classmethod
-    def generate_recommendations(cls, message: str) -> str:
+    def generate_recommendations(cls,) -> str:
         # Construir prompt para DeepSeek
         system_prompt = f"""
         ¡Hola! Soy Neko-chan, tu asistente literaria virtual  Estoy aquí para ayudarte a encontrar historias mágicas que hagan latir tu corazón. 
@@ -385,4 +425,4 @@ class Zeepubsbot:
             """
 
         # Obtener y procesar resultados
-        return cls.ask_deepseek(message, system_prompt)
+        return system_prompt
